@@ -2,128 +2,68 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>DBF Advanced Report Generator</title>
+<title>Advanced Report Generator</title>
 
 <style>
-body {
-    font-family: Arial, sans-serif;
-    padding: 20px;
-}
-h2 {
-    margin-bottom: 5px;
-}
-.controls {
-    margin: 10px 0;
-}
-button {
-    margin-right: 5px;
-}
+body { font-family: Arial, sans-serif; padding: 20px; }
+h2 { margin-bottom: 8px; }
+.controls { margin: 10px 0; }
+button { margin-right: 6px; }
 
-/* TABLE */
-table {
-    border-collapse: collapse;
-    width: 100%;
-    margin-top: 10px;
-    table-layout: auto;
-}
-th, td {
-    border: 1px solid #ccc;
-    padding: 6px 8px;
-    font-size: 13px;
-}
-td {
-    white-space: normal;
-}
-th {
-    background: #f0f0f0;
-    white-space: nowrap;
-}
+table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+th, td { border: 1px solid #ccc; padding: 6px 8px; font-size: 13px; }
+th { background: #f0f0f0; cursor: move; }
 
-/* ALIGNMENT */
-.numeric {
-    text-align: right;
-}
+.numeric { text-align: right; }
+.group-header { background: #ddd; font-weight: bold; }
+.page-total { background: #eef6ff; font-weight: bold; }
+.grand-total { background: #e6e6e6; font-weight: bold; }
 
-/* ROW TYPES */
-.group-header {
-    background: #ddd;
-    font-weight: bold;
-}
-.total-row {
-    background: #f9f9f9;
-    font-weight: bold;
-}
-.page-total {
-    background: #eef6ff;
-    font-weight: bold;
-    border-top: 2px dashed #666;
-}
-.grand-total {
-    background: #e6e6e6;
-    font-weight: bold;
-    border-top: 3px solid #000;
-}
+.pagination { margin-top: 10px; }
 
-/* UI */
-.pagination {
-    margin-top: 10px;
-}
-.column-box {
-    display: inline-block;
-    margin-right: 12px;
-}
-.column-box input[type="text"] {
-    width: 100px;
-    margin-left: 4px;
-}
+.column-box { display: inline-block; margin-right: 12px; cursor: grab; }
+.column-box input[type="text"] { width: 110px; }
 
-/* PRINT / PDF */
 @media print {
-    .ui-controls,
-    .pagination {
-        display: none !important;
-    }
-    body {
-        padding: 10px;
-    }
-    h2 {
-        margin-top: 0;
-    }
+  .ui-controls, .pagination { display: none !important; }
 }
 </style>
 </head>
 
 <body>
 
-<h2 contenteditable="true" id="reportTitle">
-    DBF Advanced Report Generator
-</h2>
+<div style="display:flex" class="ui-controls">
+  <span style="margin-left:auto;color:#3b82f6;font-size:12px;opacity:.9">
+    © 2026 Maruti
+  </span>
+</div>
+<h2 contenteditable="true" id="reportTitle">Advanced Report Generator</h2>
 
 <div class="ui-controls">
-
-<input type="file" id="dbfFile" accept=".dbf">
+<label for="dbfFile" class="file-label">Upload DBF / Excel</label>
+<input type="file" id="dbfFile" accept=".dbf,.xls,.xlsx">
 
 <div class="controls">
-    Group by:
-    <select id="groupField"></select>
+  Group by:
+  <select id="groupField"></select>
 
-    Rows per page:
-    <select id="pageSize">
-        <option>25</option>
-        <option>50</option>
-        <option selected>100</option>
-        <option>250</option>
-    </select>
+  Rows per page:
+  <select id="pageSize"></select>
 
-    <button onclick="exportCSV()">Export CSV</button>
-    <button onclick="window.print()">Export PDF</button>
-    <button onclick="saveLayout()">Save Layout</button>
-    <input type="file" id="loadLayoutFile" accept=".json" onchange="loadLayout(event)">
+  <label><input type="checkbox" id="showPageTotal" checked> Page totals</label>
+  <label><input type="checkbox" id="showGrandTotal" checked> Report totals</label>
+
+  <br><br>
+
+  <button onclick="exportCSV()">Export CSV</button>
+  <button onclick="window.print()">Export PDF</button>
+  <button onclick="saveLayout()">Save Layout</button>
+  <input type="file" accept=".json" onchange="loadLayout(event)">
 </div>
 
 <div class="controls">
-    <strong>Columns:</strong>
-    <span id="columnSelector"></span>
+  <strong>Columns (drag to reorder):</strong><br>
+  <div id="columnSelector"></div>
 </div>
 
 </div>
@@ -134,364 +74,353 @@ th {
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
 <script>
+/* ===================== STATE ===================== */
+
 let headers = [];
-let columnAliases = [];
 let allRows = [];
+
+let columnAliases = [];
 let visibleColumns = [];
+let columnFilters = [];
+let columnOrder = [];
+
 let currentPage = 1;
 
-/* ---------- HELPERS ---------- */
+/* JSON restore support */
+let loadedFileName = null;
+let pendingLayout = null;
 
-function excelSerialToDate(v) {
-    if (typeof v !== "number") return v;
-    if (v < 30000 || v > 60000) return v;
-    const d = new Date((v - 25569) * 86400 * 1000);
-    return d.toISOString().split("T")[0];
+/* ===================== INIT ===================== */
+
+const pageSizeSel = document.getElementById("pageSize");
+for (let i = 5; i <= 100; i++) {
+  const o = document.createElement("option");
+  o.value = i;
+  o.textContent = i;
+  if (i === 50) o.selected = true;
+  pageSizeSel.appendChild(o);
 }
 
-function isNumericNonDate(v) {
-    return typeof v === "number" && !isNaN(v) && !(v >= 30000 && v <= 60000);
-}
+/* ===================== HELPERS ===================== */
 
-function normalizeGroupValue(v) {
-    if (typeof v === "number" && v >= 30000 && v <= 60000) {
-        return excelSerialToDate(v);
-    }
-    if (v === null || v === undefined || v === "") {
-        return "(blank)";
-    }
-    return String(v);
-}
+const isNumeric = v => typeof v === "number" && !isNaN(v);
 
-/* ---------- LOAD DBF ---------- */
+const excelSerialToDate = v =>
+  typeof v === "number" && v > 30000 && v < 60000
+    ? new Date((v - 25569) * 86400 * 1000).toISOString().split("T")[0]
+    : v;
+
+const normalizeGroup = v =>
+  v === null || v === "" ? "(blank)" : excelSerialToDate(v);
+
+/* ===================== LOAD DATA FILE ===================== */
 
 document.getElementById("dbfFile").addEventListener("change", async e => {
-    const file = e.target.files[0];
-    if (!file) return;
+  const file = e.target.files[0];
+  if (!file) return;
 
-    const buffer = await file.arrayBuffer();
-    const workbook = XLSX.read(buffer, { type: "array", dense: true });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  loadedFileName = file.name;
 
-    const rows = XLSX.utils.sheet_to_json(sheet, {
-        header: 1,
-        defval: "",
-        blankrows: false
-    });
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-    headers = rows.shift();
-    columnAliases = [...headers];
-    allRows = rows;
-    visibleColumns = headers.map(() => true);
+  headers = rows.shift();
+  allRows = rows;
 
-    populateGroupFields();
-    populateColumnSelector();
+  /* default state */
+  columnAliases = [...headers];
+  visibleColumns = headers.map(() => true);
+  columnFilters = headers.map(() => "");
+  columnOrder = headers.map((_, i) => i);
 
-    currentPage = 1;
+  populateGroupFields();
+  populateColumnSelector();
+  currentPage = 1;
+
+  /* apply pending layout AFTER data load */
+  if (pendingLayout && pendingLayout.fileName === loadedFileName) {
+    applyLayout(pendingLayout);
+    pendingLayout = null;
+  } else {
     render();
+  }
 });
 
-/* ---------- UI ---------- */
+/* ===================== UI BUILDERS ===================== */
 
 function populateGroupFields() {
-    const sel = document.getElementById("groupField");
-    sel.innerHTML = `<option value="">(none)</option>`;
-    headers.forEach((_, i) => {
-        const o = document.createElement("option");
-        o.value = i;
-        o.textContent = columnAliases[i];
-        sel.appendChild(o);
-    });
+  const sel = document.getElementById("groupField");
+  sel.innerHTML = `<option value="">(none)</option>`;
+  headers.forEach((_, i) => {
+    const o = document.createElement("option");
+    o.value = i;
+    o.textContent = columnAliases[i];
+    sel.appendChild(o);
+  });
 }
 
 function populateColumnSelector() {
-    const c = document.getElementById("columnSelector");
-    c.innerHTML = "";
+  const c = document.getElementById("columnSelector");
+  c.innerHTML = "";
 
-    headers.forEach((_, i) => {
-        const box = document.createElement("div");
-        box.className = "column-box";
+  columnOrder.forEach((ci, oi) => {
+    const box = document.createElement("div");
+    box.className = "column-box";
+    box.draggable = true;
 
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = visibleColumns[i];
-        cb.onchange = () => {
-            visibleColumns[i] = cb.checked;
-            render();
-        };
+    box.ondragstart = e => e.dataTransfer.setData("from", oi);
+    box.ondragover = e => e.preventDefault();
+    box.ondrop = e => {
+      const from = +e.dataTransfer.getData("from");
+      columnOrder.splice(oi, 0, columnOrder.splice(from, 1)[0]);
+      populateColumnSelector();
+      render();
+    };
 
-        const input = document.createElement("input");
-        input.type = "text";
-        input.value = columnAliases[i];
-        input.oninput = () => {
-            columnAliases[i] = input.value || headers[i];
-            populateGroupFields();
-            render();
-        };
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = visibleColumns[ci];
+    cb.onchange = () => { visibleColumns[ci] = cb.checked; render(); };
 
-        box.appendChild(cb);
-        box.appendChild(input);
-        c.appendChild(box);
-    });
+    const txt = document.createElement("input");
+    txt.value = columnAliases[ci];
+    txt.oninput = () => {
+      columnAliases[ci] = txt.value || headers[ci];
+      populateGroupFields();
+      render();
+    };
+
+    box.append(cb, txt);
+    c.appendChild(box);
+  });
 }
 
-/* ---------- RENDER ---------- */
+/* ===================== CORE ===================== */
+
+function getFilteredRows() {
+  return allRows.filter(r =>
+    r.every((v, i) =>
+      !visibleColumns[i] ||
+      !columnFilters[i] ||
+      String(excelSerialToDate(v))
+        .toLowerCase()
+        .includes(columnFilters[i].toLowerCase())
+    )
+  );
+}
 
 function render() {
-    const groupIndex = document.getElementById("groupField").value;
-    const pageSize = parseInt(document.getElementById("pageSize").value);
+  const groupIndex = groupField.value;
+  const pageSize = +pageSizeSel.value;
 
-    let grouped = {};
-    let grandTotals = {};
+  const rows = getFilteredRows();
+  let flat = [];
+  let grandTotals = {};
 
-    allRows.forEach(r => {
-        r.forEach((v, i) => {
-            if (visibleColumns[i] && isNumericNonDate(v)) {
-                grandTotals[i] = (grandTotals[i] || 0) + v;
-            }
-        });
+  rows.forEach(r =>
+    columnOrder.forEach(i => {
+      if (visibleColumns[i] && isNumeric(r[i]))
+        grandTotals[i] = (grandTotals[i] || 0) + r[i];
+    })
+  );
+
+  if (groupIndex !== "") {
+    const groups = {};
+    rows.forEach(r => {
+      const key = normalizeGroup(r[groupIndex]);
+      (groups[key] ??= []).push(r);
     });
 
-    if (groupIndex !== "") {
-        allRows.forEach(r => {
-            const key = normalizeGroupValue(r[groupIndex]);
-            grouped[key] = grouped[key] || [];
-            grouped[key].push(r);
-        });
-    } else {
-        grouped["ALL"] = allRows;
-    }
-
-    const flat = [];
-
-    Object.entries(grouped).forEach(([key, rows]) => {
-        if (groupIndex !== "") flat.push({ group: key });
-
-        let totals = {};
-        rows.forEach(r => {
-            flat.push(r);
-            r.forEach((v, i) => {
-                if (visibleColumns[i] && isNumericNonDate(v)) {
-                    totals[i] = (totals[i] || 0) + v;
-                }
-            });
-        });
-
-        if (groupIndex !== "") flat.push({ total: totals });
+    Object.entries(groups).forEach(([g, rs]) => {
+      flat.push({ __group: g });
+      flat.push(...rs);
     });
+  } else {
+    flat.push(...rows);
+  }
 
-    flat.push({ grand: grandTotals });
+  if (showGrandTotal.checked)
+    flat.push({ __grand: true, totals: grandTotals });
 
-    const totalPages = Math.ceil(flat.length / pageSize);
-    const start = (currentPage - 1) * pageSize;
-    const pageRows = flat.slice(start, start + pageSize);
+  const pages = Math.max(1, Math.ceil(flat.length / pageSize));
+  currentPage = Math.min(currentPage, pages);
 
-    renderTable(pageRows);
-    renderPagination(totalPages);
+  renderTable(flat.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  ));
+
+  renderPagination(pages);
 }
 
-/* ---------- TABLE ---------- */
+/* ===================== TABLE ===================== */
 
 function renderTable(rows) {
-    const report = document.getElementById("report");
-    report.innerHTML = "";
+  const report = document.getElementById("report");
+  report.innerHTML = "";
 
-    const table = document.createElement("table");
+  const table = document.createElement("table");
+  const thead = table.createTHead();
+  const hr = thead.insertRow();
+  const fr = thead.insertRow();
 
-    const trh = document.createElement("tr");
-    headers.forEach((_, i) => {
-        if (!visibleColumns[i]) return;
-        const th = document.createElement("th");
-        th.textContent = columnAliases[i];
-        trh.appendChild(th);
-    });
-    table.appendChild(trh);
+  columnOrder.forEach(i => {
+    if (!visibleColumns[i]) return;
+    hr.insertCell().textContent = columnAliases[i];
+    const f = fr.insertCell();
+    const inp = document.createElement("input");
+    inp.value = columnFilters[i];
+    inp.oninput = () => {
+      columnFilters[i] = inp.value;
+      currentPage = 1;
+      render();
+    };
+    f.appendChild(inp);
+  });
 
-    let pageTotals = {};
+  const tbody = table.createTBody();
+  let pageTotals = {};
 
-    rows.forEach(r => {
-
-        if (r.group) {
-            const tr = document.createElement("tr");
-            const td = document.createElement("td");
-            td.colSpan = visibleColumns.filter(Boolean).length;
-            td.textContent = "▶ " + r.group;
-            td.className = "group-header";
-            tr.appendChild(td);
-            table.appendChild(tr);
-            return;
-        }
-
-        if (r.total || r.grand) {
-            const tr = document.createElement("tr");
-            headers.forEach((_, i) => {
-                if (!visibleColumns[i]) return;
-                const td = document.createElement("td");
-                const val = (r.total || r.grand)[i];
-                td.textContent = val ? val.toFixed(2) : "";
-                td.className = (r.grand ? "grand-total" : "total-row") + " numeric";
-                tr.appendChild(td);
-            });
-            table.appendChild(tr);
-            return;
-        }
-
-        const tr = document.createElement("tr");
-        r.forEach((v, i) => {
-            if (!visibleColumns[i]) return;
-            if (isNumericNonDate(v)) {
-                pageTotals[i] = (pageTotals[i] || 0) + v;
-            }
-            const td = document.createElement("td");
-            td.textContent = excelSerialToDate(v);
-            if (isNumericNonDate(v)) td.classList.add("numeric");
-            tr.appendChild(td);
-        });
-        table.appendChild(tr);
-    });
-
-    const ptr = document.createElement("tr");
-    headers.forEach((_, i) => {
-        if (!visibleColumns[i]) return;
-        const td = document.createElement("td");
-        td.textContent = pageTotals[i] ? pageTotals[i].toFixed(2) : "";
-        td.className = "page-total numeric";
-        ptr.appendChild(td);
-    });
-    table.appendChild(ptr);
-
-    report.appendChild(table);
-    autoFitTable(table);
-}
-
-/* ---------- PAGINATION ---------- */
-
-function renderPagination(totalPages) {
-    const p = document.getElementById("pagination");
-    p.innerHTML = "";
-
-    for (let i = 1; i <= totalPages; i++) {
-        const b = document.createElement("button");
-        b.textContent = i;
-        b.disabled = i === currentPage;
-        b.onclick = () => {
-            currentPage = i;
-            render();
-        };
-        p.appendChild(b);
+  rows.forEach(r => {
+    if (r.__group) {
+      const tr = tbody.insertRow();
+      const td = tr.insertCell();
+      td.colSpan = columnOrder.filter(i => visibleColumns[i]).length;
+      td.textContent = "▶ " + r.__group;
+      td.className = "group-header";
+      return;
     }
+
+    if (r.__grand) return;
+
+    const tr = tbody.insertRow();
+    columnOrder.forEach(i => {
+      if (!visibleColumns[i]) return;
+      const td = tr.insertCell();
+      td.textContent = excelSerialToDate(r[i]);
+      if (isNumeric(r[i])) {
+        td.className = "numeric";
+        pageTotals[i] = (pageTotals[i] || 0) + r[i];
+      }
+    });
+  });
+
+  if (showPageTotal.checked) {
+    const tr = tbody.insertRow();
+    columnOrder.forEach(i => {
+      if (!visibleColumns[i]) return;
+      const td = tr.insertCell();
+      td.textContent = pageTotals[i]?.toFixed(2) || "";
+      td.className = "page-total numeric";
+    });
+  }
+
+  if (showGrandTotal.checked) {
+    const tr = tbody.insertRow();
+    const g = rows.find(r => r.__grand)?.totals || {};
+    columnOrder.forEach(i => {
+      if (!visibleColumns[i]) return;
+      const td = tr.insertCell();
+      td.textContent = g[i]?.toFixed(2) || "";
+      td.className = "grand-total numeric";
+    });
+  }
+
+  report.appendChild(table);
 }
 
-document.getElementById("groupField").onchange = () => {
-    currentPage = 1;
-    render();
-};
-document.getElementById("pageSize").onchange = () => {
-    currentPage = 1;
-    render();
-};
+/* ===================== PAGINATION ===================== */
 
-/* ---------- EXPORT ---------- */
+function renderPagination(pages) {
+  const p = document.getElementById("pagination");
+  p.innerHTML = "";
+  for (let i = 1; i <= pages; i++) {
+    const b = document.createElement("button");
+    b.textContent = i;
+    b.disabled = i === currentPage;
+    b.onclick = () => { currentPage = i; render(); };
+    p.appendChild(b);
+  }
+}
+
+/* ===================== CSV ===================== */
 
 function exportCSV() {
-    let csv = columnAliases
-        .filter((_, i) => visibleColumns[i])
-        .join(",") + "\n";
-
-    allRows.forEach(r => {
-        csv += r
-            .filter((_, i) => visibleColumns[i])
-            .map(v => `"${excelSerialToDate(v)}"`)
-            .join(",") + "\n";
-    });
-
-    const blob = new Blob([csv], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "report.csv";
-    a.click();
+  const out = [];
+  out.push(columnOrder.filter(i => visibleColumns[i]).map(i => columnAliases[i]));
+  getFilteredRows().forEach(r =>
+    out.push(columnOrder.filter(i => visibleColumns[i]).map(i => r[i]))
+  );
+  const ws = XLSX.utils.aoa_to_sheet(out);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Report");
+  XLSX.writeFile(wb, "report.csv");
 }
 
-/* ---------- SAVE / LOAD LAYOUT ---------- */
+/* ===================== SAVE / LOAD JSON ===================== */
 
 function saveLayout() {
-    const layout = {
-        title: document.getElementById("reportTitle").innerText.trim(),
-        columnAliases,
-        visibleColumns,
-        groupField: document.getElementById("groupField").value,
-        pageSize: document.getElementById("pageSize").value
-    };
-
-    const blob = new Blob(
-        [JSON.stringify(layout, null, 2)],
-        { type: "application/json" }
-    );
-
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "report-layout.json";
-    a.click();
+  const layout = {
+    fileName: loadedFileName,
+    title: reportTitle.innerText,
+    columnAliases,
+    visibleColumns,
+    columnFilters,
+    columnOrder,
+    groupField: groupField.value,
+    pageSize: pageSizeSel.value,
+    showPageTotal: showPageTotal.checked,
+    showGrandTotal: showGrandTotal.checked
+  };
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(layout, null, 2)]));
+  a.download = "report-layout.json";
+  a.click();
 }
 
-function loadLayout(event) {
-    const file = event.target.files[0];
-    if (!file) return;
+function loadLayout(e) {
+  const r = new FileReader();
+  r.onload = ev => {
+    const l = JSON.parse(ev.target.result);
 
-    const reader = new FileReader();
-    reader.onload = e => {
-        try {
-            const layout = JSON.parse(e.target.result);
-
-            if (layout.title)
-                document.getElementById("reportTitle").innerText = layout.title;
-
-            if (Array.isArray(layout.columnAliases))
-                columnAliases = layout.columnAliases.map((v, i) => v || headers[i]);
-
-            if (Array.isArray(layout.visibleColumns))
-                visibleColumns = layout.visibleColumns.slice();
-
-            if (layout.groupField !== undefined)
-                document.getElementById("groupField").value = layout.groupField;
-
-            if (layout.pageSize)
-                document.getElementById("pageSize").value = layout.pageSize;
-
-            populateGroupFields();
-            populateColumnSelector();
-            currentPage = 1;
-            render();
-
-        } catch {
-            alert("Invalid layout file");
-        }
-    };
-    reader.readAsText(file);
-}
-
-/* ---------- AUTO FIT ---------- */
-
-function autoFitTable(table) {
-    const rows = table.rows;
-    if (!rows.length) return;
-
-    const colCount = rows[0].cells.length;
-    const colWidths = new Array(colCount).fill(0);
-
-    for (let r = 0; r < rows.length; r++) {
-        for (let c = 0; c < colCount; c++) {
-            const cell = rows[r].cells[c];
-            colWidths[c] = Math.max(colWidths[c], cell.scrollWidth);
-        }
+    if (!loadedFileName || l.fileName !== loadedFileName) {
+      pendingLayout = l;
+      alert("Please load DBF/Excel file: " + l.fileName);
+      return;
     }
-
-    for (let c = 0; c < colCount; c++) {
-        for (let r = 0; r < rows.length; r++) {
-            rows[r].cells[c].style.width = (colWidths[c] + 12) + "px";
-        }
-    }
+    applyLayout(l);
+  };
+  r.readAsText(e.target.files[0]);
 }
+
+function applyLayout(l) {
+  reportTitle.innerText = l.title || reportTitle.innerText;
+  columnAliases = l.columnAliases;
+  visibleColumns = l.visibleColumns;
+  columnFilters = l.columnFilters;
+  columnOrder = l.columnOrder;
+  groupField.value = l.groupField ?? "";
+  pageSizeSel.value = l.pageSize;
+  showPageTotal.checked = l.showPageTotal;
+  showGrandTotal.checked = l.showGrandTotal;
+
+  populateGroupFields();
+  populateColumnSelector();
+  currentPage = 1;
+  render();
+}
+
+/* ===================== EVENTS ===================== */
+
+groupField.onchange =
+pageSizeSel.onchange =
+showPageTotal.onchange =
+showGrandTotal.onchange = () => {
+  currentPage = 1;
+  render();
+};
 </script>
 
 </body>
